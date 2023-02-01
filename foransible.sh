@@ -45,7 +45,7 @@ then
         printf " \\n"
         printf "USAGE: \\n"
         printf " \\n"
-        printf "${bld} $0 <DC name> <Starting BEIP> <Starting FEIP> ${nrml} \\n"
+        printf "${bld} $0 <DCname> <Starting BEIP> <Starting FEIP> ${nrml} \\n"
         printf " \\n"
         #printf "EXAMPLE: \\n"
         printf " \\n"
@@ -54,7 +54,7 @@ then
         exit 1
 fi
 printf " \\n"
-printf "${bld} DC Name: (%s): ${nrml}"
+printf "${bld} DCname: (%s): ${nrml}"
 read input
 host=${input}
     if [ `ls -al ${PWD}/inputdata/*$host* | wc -l` -ne  "1" ]
@@ -129,7 +129,7 @@ dhcpintname=${input:-$dhcpint}
 printf " \\n"
 printf "${bld} CHECK: You have entered:${nrml}\\n"
 printf " \\n"
-printf "${bld} DC Name:$host${nrml}\\n"
+printf "${bld} DCname:$host${nrml}\\n"
 printf "${bld} Starting BE IP=$beginip${nrml}\\n"
 printf "${bld} Starting FE IP=$febeginip${nrml}\\n"
 printf "${bld} BE Gateway=$begw${nrml}\\n"
