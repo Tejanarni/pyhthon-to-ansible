@@ -1,4 +1,5 @@
 #!/bin/sh
+DCname: $1
 #
 #
 #This is for Gen6 Rescue DNS DHCP DNSMASQ Setup and create tar file to scp to new DHCP server
