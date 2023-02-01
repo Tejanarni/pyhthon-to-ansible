@@ -2,8 +2,8 @@
 - name: Transfer and execute a script.
 
   hosts: localhost
-  remote_user: test_user
-  sudo: yes
+  #remote_user: test_user
+  #sudo: yes
   tasks:
      - name: Transfer the script
        copy: src=foransible.sh dest=/srv/ansible mode=0777
