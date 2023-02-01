@@ -9,7 +9,7 @@
        copy: src=foransible.sh dest=/srv/ansible mode=0777
 
      - name: Execute the script
-       shell: yes | sh /srv/ansible/foransible.sh
+       shell: dcname | sh /srv/ansible/foransible.sh
        #register: "result"
        ignore_errors: true
 
