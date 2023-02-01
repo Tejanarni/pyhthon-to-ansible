@@ -10,7 +10,7 @@
 
      - name: Execute the script
        command: yes | sh /srv/ansible/foransible.sh
-       register: result
+       register: "result"
        ignore_errors: true
 
      - name: Show result
