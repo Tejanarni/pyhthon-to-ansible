@@ -1,15 +1,15 @@
 ---
 - name: Transfer and execute a script.
 
-  hosts: DHCL
+  hosts: localhost
   remote_user: test_user
   sudo: yes
   tasks:
      - name: Transfer the script
-       copy: src=foransible.sh dest=/home/dhcl mode=0777
+       copy: src=foransible.sh dest=/srv/ansible mode=0777
 
      - name: Execute the script
-       command: sh /home/test_user/foransible.sh
+       command: sh /srv/ansible/foransible.sh
        register: result
 
      - name: Show result
