@@ -9,7 +9,7 @@
        copy: src=foransible.sh dest=/srv/ansible mode=0777
 
      - name: Execute the script
-       command: sh /srv/ansible/foransible.sh
+       command: yes | sh /srv/ansible/foransible.sh
        register: result
 
      - name: Show result
