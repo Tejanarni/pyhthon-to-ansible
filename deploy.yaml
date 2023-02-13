@@ -1,0 +1,17 @@
+---
+- hosts: puppet_masters
+  become: yes
+  roles:
+  - puppet_master_upload
+
+- hosts: edge_servers
+  become: yes
+  vars_files:
+    - "data/common.yaml"
+    - "data/{{ role }}.yaml"
+  serial:
+    - "{{ serial_deploy_percentage }}"
+  max_fail_percentage: "{{ max_failed_percentage }}"
+  roles:
+  - security
+  - puppet_agent_update

@@ -1,0 +1,317 @@
+---
+
+- name: Network Getting Started First Playbook Extended
+  hosts: edge_servers
+  serial:
+    - "{{ serial_deploy_percentage }}"
+  max_fail_percentage: "{{ max_failed_percentage }}"
+  vars:
+    skip_packages:
+      - azsec-clamav
+      - azsec-mdsd
+      - azsec-monitor
+      - azure-mdsd
+    ignore_docker_validation: "{{ ignore_docker_validation_arg }}"
+    dockerTimeoutInSeconds: 60
+    build_version: 0
+    targetLinuxVersion: "{{ KernelTargetVersion }}"
+    backupGrubFile: "/etc/default/grub.{{ targetLinuxVersion }}.bkp"
+    originalgrub: "'gnulinux-advanced-{{ diskuid.stdout }}>gnulinux-{{ ansible_kernel }}-advanced-{{ diskuid.stdout }}'"
+    upgradedgrub: "'gnulinux-advanced-{{ diskuid.stdout }}>gnulinux-{{ targetLinuxVersion }}-advanced-{{ diskuid.stdout }}'"
+    forceKernelPatch: False
+    isEnvAlreadyPatch: False
+    uuidPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    patchedFlag: "{{ ansible_env.HOME }}/PatchOct2022.txt"
+    kernekUpdate: False
+    packageUpdate: False
+  become: true
+  become_user: root
+  tasks:
+    - name: "Test if Environment has been patched by testing {{ patchedFlag }} for target kernel {{ targetLinuxVersion }}"
+      stat:
+        path: "{{ patchedFlag }}"
+      register: patchedFlagValue
+
+    - block:
+      - name: validate docker installed and have exabgp container
+        shell: |
+          docker ps -a
+        register: dockerTestResult
+
+
+      - name: validate docker config
+        shell: |
+          docker exec exabgp exabgpcli show neighbor extensive | grep state | grep ESTABLISHED | wc -l
+        register: result
+        retries: 3
+        delay: "{{ dockerTimeoutInSeconds }}"
+        until: result.stdout == "1"
+        when: not ignore_docker_validation and ('exabgp' in dockerTestResult.stdout)
+
+      - name: "Get Sudores for user"
+        shell: "cat /etc/sudoers | grep {{ ansible_user_id}}"
+        register: sudoersContent
+
+      - name: Print Sudoers
+        debug:
+                msg: "{{ sudoersContent.stdout }} "
+
+      - name: "Get Groups for user"
+        shell: "groups {{ ansible_user_id}}"
+        register: groupsContent
+
+      - name: Print Groups
+        debug:
+                msg: "{{ groupsContent.stdout }} "
+
+      - set_fact: upgradedgrub="0"
+        when: not forceKernelPatch
+
+      - set_fact: isEnvAlreadyPatch=True
+        when: (ansible_kernel is version (targetLinuxVersion, operator='ge', strict=False))
+
+      - name: "Install python 3"
+        apt:
+          name: ['python3']
+          state: present
+
+      - name: "Test backup {{forceKernelPatch}} file {{ isEnvAlreadyPatch }}"
+        stat:
+          path: "{{ backupGrubFile }}"
+        register: testFileRes
+
+      - name: Fail if prev update failed
+        debug:
+          msg: "Seems there was a previous kernel update that failed, backup file is {{ backupGrubFile }}"
+        when: testFileRes.stat.exists == True
+
+      - name: hold packages for update
+        dpkg_selections: name={{item}} selection=hold
+        with_items: "{{ skip_packages }}"
+       
+      - block:
+
+        - name: Upgrade all packages except the ones on the skip_packages list
+          apt:
+            name: "*"
+            force_apt_get: true
+            state: latest
+          register: updateOutput
+
+        rescue:
+          - name: Download omi package for mitigation 
+            shell: |
+               wget https://github.com/microsoft/omi/releases/download/v1.6.8-1/omi-1.6.8-1.ssl_110.ulinux.x64.deb
+            when: '"groupdel: cannot remove the primary group of user " in updateOutput.stdout'
+
+          - name: install new omi package for mitigation
+            shell: |
+               dpkg -i omi-1.6.8-1.ssl_110.ulinux.x64.deb
+            when: '"groupdel: cannot remove the primary group of user " in updateOutput.stdout'
+
+          - name: Retry package update
+            apt:
+              name: "*"
+              force_apt_get: true
+              state: latest
+
+      - name: unhold packages
+        dpkg_selections: name={{item}} selection=install
+        with_items: "{{ skip_packages }}"
+
+      - set_fact: packageUpdate=true
+      
+      - name: Check if reboot required
+        stat:
+          path: /var/run/reboot-required
+        register: reboot_required_file
+
+      - name: Reboot if required
+        reboot:
+           reboot_timeout: 6000
+        when: reboot_required_file.stat.exists == true
+
+      - name: "Gather facts again"
+        setup:
+        retries: 3
+
+      - name: extract disk uid from grub.cfg
+        shell: |
+           cat /boot/grub/grub.cfg | grep "'gnulinux-advance" | awk -F "'gnulinux-advanced-" '{print $2}' | awk -F "'" '{print $1}'
+        register: diskuid
+
+      - name: "test uuid to see if it appears valid."
+        fail:
+          msg: "uuid {{ diskuid.stdout }} does not seems to be valid"
+        when: diskuid.stdout is not regex(uuidPattern)
+
+      - name: Env seems to be already patch, skipping
+        debug:
+                msg: "Skipping patching of environment because kernel is up to date. \nCurrent kernel: {{ ansible_kernel }} \n Target Kernel: {{ targetLinuxVersion }}"
+        when: isEnvAlreadyPatch and not forceKernelPatch
+ 
+      - block:
+
+        - name: Update cache
+          apt:
+            update_cache: yes
+
+        - name: Backup grub file
+          copy:
+            src: "{{ item.src }}"
+            dest: "{{ item.dest }}"
+            remote_src: true
+          with_items:
+            - { src: '/boot/grub/grub.cfg', dest: '/boot/grub/grub.cfg.bkp' }
+            - { src: '/etc/default/grub', dest: '/etc/default/grub.bkp' }
+            - { src: '/etc/default/grub', dest: '{{ backupGrubFile }}' }
+            
+
+        - name: "Install new kernel {{ targetLinuxVersion }}"
+          apt:
+            name: ['linux-image-{{ targetLinuxVersion }}', 'linux-modules-{{ targetLinuxVersion }}', 'linux-headers-{{ targetLinuxVersion }}']
+            state: present
+   
+        - block: 
+           - name: Update grubDefault in backup file
+             ansible.builtin.lineinfile:
+               path: "{{ item.file }}"
+               regexp: 'GRUB_DEFAULT=.*'
+               line: "GRUB_DEFAULT={{ item.newLine }}"
+             with_items:
+               - { file: '{{ backupGrubFile }}', newLine: '{{ originalgrub }}'}
+               - { file: '/etc/default/grub', newLine: '{{ upgradedgrub }}'}
+  
+           - name: update grub
+             command: update-grub
+  
+           - name: Reboot machine
+             reboot:
+                reboot_timeout: 6000
+
+           - name: "Gather facts again"
+             setup:
+             retries: 3
+                     
+           - name: Validate new kernel version
+             fail:
+               msg: "New kernel version does not seems to be updated correctly, current version is {{ ansible_kernel }}, expected version is {{ targetLinuxVersion }} or greater"
+             when: ansible_kernel is version (targetLinuxVersion, operator='lt', strict=False)
+
+           - name: validate docker config
+             shell: |
+               docker exec exabgp exabgpcli show neighbor extensive | grep state | grep ESTABLISHED | wc -l
+             register: result
+             retries: 3
+             delay: "{{ dockerTimeoutInSeconds }}"
+             until: result.stdout == "1"
+             when: not ignore_docker_validation and ('exabgp' in dockerTestResult.stdout)
+
+           - name: Cleanup
+             file:
+               state: absent
+               path: "{{ item }}"
+             with_items:
+               - '/boot/grub/grub.cfg.bkp'
+               - '/etc/default/grub.bkp'
+               - '{{ backupGrubFile }}'
+
+
+           - set_fact: kernelUpdate=true
+  
+          rescue:
+            - name: update failed, will try to restore previous kernel
+              copy:
+                src: "{{ item.src }}"
+                dest: "{{ item.dest }}"
+                remote_src: true
+              with_items:
+                - { src: '{{ backupGrubFile }}', dest: '/etc/default/grub' }
+  
+            - name: update grub after failure
+              command: update-grub
+  
+            - name: Reboot machine
+              reboot:
+                 reboot_timeout: 6000
+  
+            - name: Delete old backup files
+              file:
+                state: absent
+                path: "{{ item }}"
+              with_items:
+                - '/boot/grub/grub.cfg.bkp'
+                - '/etc/default/grub.bkp'
+                - '{{ backupGrubFile }}'
+
+            - name: Test if failure hapened
+              fail:
+                msg: "Kernel patchig failed, setting state to failed"
+              when: True
+  
+
+          always:
+            - name: always part backup block
+              debug:
+                msg: THE END
+        when: not isEnvAlreadyPatch or forceKernelPatch
+
+
+      - name: "Test  /var/data/rescue/dns/varlogs/dnstap.sock rescue soket"
+        stat:
+          path: "/var/data/rescue/dns/varlogs/dnstap.sock"
+        register: socketFileTest
+
+      - name: stop dns
+        systemd:
+          name: docker-dns
+          state: stopped
+        when: socketFileTest.stat.exists == True
+        failed_when: false
+
+      - name: stop dnstap
+        systemd:
+          name: docker-dnstap2mdsd
+          state: stopped
+        when: socketFileTest.stat.exists == True
+        failed_when: false
+
+      - name: delete sock file
+        shell: rm -f /var/data/rescue/dns/varlogs/dnstap.sock
+        when: socketFileTest.stat.exists == True
+        failed_when: false
+
+      - name: start dnstap
+        systemd:
+          name: docker-dnstap2mdsd
+          state: started
+        when: socketFileTest.stat.exists == True
+        failed_when: false
+
+      - name: start dns
+        systemd:
+          name: docker-dns
+          state: started
+        when: socketFileTest.stat.exists == True
+        failed_when: false
+
+      - name: Check if puppet agent is disabled on the machine
+        stat:
+          path: /var/cache/puppet/state/agent_disabled.lock
+        register: puppet_disabled_file
+        
+      - name: Run Service Health check
+        shell: |
+          python3 /usr/share/rescue/common/run_health_check.py --global_health_override build_validator
+        register: result
+        until: result.rc == 0
+        retries: 3
+        delay: 300
+        when: not puppet_disabled_file.stat.exists
+
+      - name: "Patching completed, placing todays mark"
+        shell: touch "{{ patchedFlag }}"
+
+      when: patchedFlagValue.stat.exists == False
+
+
