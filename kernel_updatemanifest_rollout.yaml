@@ -1,16 +1,20 @@
 ---
 
-- name: Network Getting Started First Playbook Extended
-  hosts: edge_servers
+- name: Patching Rollout
+  hosts: all
   serial:
     - "{{ serial_deploy_percentage }}"
   max_fail_percentage: "{{ max_failed_percentage }}"
+- name: Install Adhoc Packages
+  hosts: all
+  serial: "100%"
   vars:
     skip_packages:
       - azsec-clamav
       - azsec-mdsd
       - azsec-monitor
       - azure-mdsd
+    package_file: /var/tmp/packages.txt
     ignore_docker_validation: "{{ ignore_docker_validation_arg }}"
     dockerTimeoutInSeconds: 60
     build_version: 0
@@ -21,7 +25,7 @@
     forceKernelPatch: False
     isEnvAlreadyPatch: False
     uuidPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    patchedFlag: "{{ ansible_env.HOME }}/PatchOct2022.txt"
+    patchedFlag: "{{ ansible_env.HOME }}/PatchApr2023.txt"
     kernekUpdate: False
     packageUpdate: False
   become: true
@@ -37,7 +41,6 @@
         shell: |
           docker ps -a
         register: dockerTestResult
-
 
       - name: validate docker config
         shell: |
@@ -70,10 +73,8 @@
       - set_fact: isEnvAlreadyPatch=True
         when: (ansible_kernel is version (targetLinuxVersion, operator='ge', strict=False))
 
-      - name: "Install python 3"
-        apt:
-          name: ['python3']
-          state: present
+      - name: "Install ubuntu-advantage-tools"
+        shell: sudo apt install ubuntu-advantage-tools -y
 
       - name: "Test backup {{forceKernelPatch}} file {{ isEnvAlreadyPatch }}"
         stat:
@@ -85,17 +86,59 @@
           msg: "Seems there was a previous kernel update that failed, backup file is {{ backupGrubFile }}"
         when: testFileRes.stat.exists == True
 
+      - name: Get Puppet IP from /etc/hosts
+        shell: "grep -w puppet /etc/hosts | awk '{print $1}'"
+        register: puppet_ip
+
+      - name: Print Puppet IP
+        debug:
+          var: puppet_ip.stdout
+
+      - name: Backup sources.list file
+        copy:
+          src: /etc/apt/sources.list
+          dest: /etc/apt/sources.list.bkporig
+          owner: root
+          group: root
+          mode: '0644'
+
+      - name: Remove existing sources.list content
+        lineinfile:
+          path: /etc/apt/sources.list
+          state: absent
+          regexp: "^deb.*"
+        ignore_errors: true
+
+      - name: Add new repository
+        lineinfile:
+          path: /etc/apt/sources.list
+          line: "deb [trusted=yes] http://{{ puppet_ip.stdout }}/ubuntu1804/amd64/pkgs_04052023 /"
+          create: true
+
+      - name: Update cache
+        apt:
+          update_cache: yes
+        register: cache  # capture the output from task execution and store it in a variable
+        ignore_errors: true  # Play book will continue to exceute even errors in this step
+
+      - name: Create manifest file with pre and post versions
+        shell: |
+                apt list --upgradable | awk '{split($1,a,"/"); print a[1]}' | sed '1d' > /var/tmp/packages.txt  
+                apt list --upgradable | awk '{split($1,a,"/"); print a[1]"="$2}' | sed '1d' > /var/tmp/pkg-new.txt
+                apt list --upgradable | awk '{split($1,a,"/"); print a[1]"="$6}' | sed 's/]//g' | sed '1d' > /var/tmp/pkgs-current.txt    
+
       - name: hold packages for update
         dpkg_selections: name={{item}} selection=hold
         with_items: "{{ skip_packages }}"
-       
+
       - block:
 
         - name: Upgrade all packages except the ones on the skip_packages list
           apt:
             name: "*"
-            force_apt_get: true
             state: latest
+          retries: 3
+          delay: 10
           register: updateOutput
 
         rescue:
@@ -149,12 +192,13 @@
         debug:
                 msg: "Skipping patching of environment because kernel is up to date. \nCurrent kernel: {{ ansible_kernel }} \n Target Kernel: {{ targetLinuxVersion }}"
         when: isEnvAlreadyPatch and not forceKernelPatch
- 
+
       - block:
 
-        - name: Update cache
+        - name: Update cache2
           apt:
             update_cache: yes
+          register: cache2           
 
         - name: Backup grub file
           copy:
@@ -165,7 +209,7 @@
             - { src: '/boot/grub/grub.cfg', dest: '/boot/grub/grub.cfg.bkp' }
             - { src: '/etc/default/grub', dest: '/etc/default/grub.bkp' }
             - { src: '/etc/default/grub', dest: '{{ backupGrubFile }}' }
-            
+
 
         - name: "Install new kernel {{ targetLinuxVersion }}"
           apt:
@@ -248,13 +292,27 @@
               fail:
                 msg: "Kernel patchig failed, setting state to failed"
               when: True
-  
 
           always:
             - name: always part backup block
               debug:
                 msg: THE END
         when: not isEnvAlreadyPatch or forceKernelPatch
+
+      - name: Retrive actual backed sources.list file
+        shell: mv /etc/apt/sources.list.bkporig /etc/apt/sources.list
+        when: cache.stdout | regex_search("^failed(.*)$")  # Retrival of actual backed sources.list file will only happen when there is failure in cache update step
+
+
+
+             #### or for any step ######
+
+      - name: Run this task if any of the previous tasks failed
+        shell: mv /etc/apt/sources.list.bkporig /etc/apt/sources.list
+        debug:
+          msg: "There were failures in the previous tasks"
+        when: "ansible_failed_task is defined"   #when condition checks if the ansible_failed_task variable is defined, which means that one or more tasks have failed
+
 
 
       - name: "Test  /var/data/rescue/dns/varlogs/dnstap.sock rescue soket"
@@ -313,5 +371,3 @@
         shell: touch "{{ patchedFlag }}"
 
       when: patchedFlagValue.stat.exists == False
-
-
