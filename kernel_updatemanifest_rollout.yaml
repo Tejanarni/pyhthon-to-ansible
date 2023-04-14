@@ -118,8 +118,21 @@
       - name: Update cache
         apt:
           update_cache: yes
-        register: cache  # capture the output from task execution and store it in a variable
-        ignore_errors: true  # Play book will continue to exceute even errors in this step
+        
+      - name: Check APT cache status 
+        shell: "apt-get update -o Debug::NoLocking=true >/dev/null 2>&1 || echo 'failed'" 
+        register: apt_cache_status
+
+      - name: Retrieve sources.list backup
+        copy:
+          src: /etc/apt/sources.list.bkporig
+          dest: /etc/apt/sources.list
+          owner: root
+          group: root
+          mode: '0644'
+        when: apt_cache_status.stdout == "failed"
+
+
 
       - name: Create manifest file with pre and post versions
         shell: |
@@ -136,9 +149,8 @@
         - name: Upgrade all packages except the ones on the skip_packages list
           apt:
             name: "*"
+            force_apt_get: true
             state: latest
-          retries: 3
-          delay: 10
           register: updateOutput
 
         rescue:
@@ -210,12 +222,14 @@
             - { src: '/etc/default/grub', dest: '/etc/default/grub.bkp' }
             - { src: '/etc/default/grub', dest: '{{ backupGrubFile }}' }
 
-
         - name: "Install new kernel {{ targetLinuxVersion }}"
           apt:
             name: ['linux-image-{{ targetLinuxVersion }}', 'linux-modules-{{ targetLinuxVersion }}', 'linux-headers-{{ targetLinuxVersion }}']
             state: present
-   
+
+        - name: Retrive actual backed sources.list file
+          shell: mv /etc/apt/sources.list.bkporig /etc/apt/sources.list
+
         - block: 
            - name: Update grubDefault in backup file
              ansible.builtin.lineinfile:
@@ -298,22 +312,6 @@
               debug:
                 msg: THE END
         when: not isEnvAlreadyPatch or forceKernelPatch
-
-      - name: Retrive actual backed sources.list file
-        shell: mv /etc/apt/sources.list.bkporig /etc/apt/sources.list
-        when: cache.stdout | regex_search("^failed(.*)$")  # Retrival of actual backed sources.list file will only happen when there is failure in cache update step
-
-
-
-             #### or for any step ######
-
-      - name: Run this task if any of the previous tasks failed
-        shell: mv /etc/apt/sources.list.bkporig /etc/apt/sources.list
-        debug:
-          msg: "There were failures in the previous tasks"
-        when: "ansible_failed_task is defined"   #when condition checks if the ansible_failed_task variable is defined, which means that one or more tasks have failed
-
-
 
       - name: "Test  /var/data/rescue/dns/varlogs/dnstap.sock rescue soket"
         stat:
